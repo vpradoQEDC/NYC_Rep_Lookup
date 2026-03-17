@@ -12,7 +12,6 @@ from PyQt5.QtWidgets import (
     QTabWidget, QProgressBar, QComboBox, QMessageBox, QScrollArea
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl, QSize
-from PyQt5.QtChart import QChart, QChartView, QBarSeries, QBarSet, QBarCategoryAxis, QValueAxis
 from PyQt5.QtGui import QPalette, QColor, QPixmap, QIcon
 from bs4 import BeautifulSoup
 
