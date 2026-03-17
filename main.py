@@ -1,9 +1,4 @@
-import sys
-import csv
-import os
-import sqlite3
-import requests
-import pandas as pd
+
 import webbrowser
 from datetime import datetime
 from PyQt5.QtWidgets import (
@@ -12,7 +7,7 @@ from PyQt5.QtWidgets import (
     QTabWidget, QProgressBar, QComboBox, QMessageBox, QScrollArea
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer, QUrl, QSize
-from PyQt5.QtGui import QPalette, QColor, QPixmap, QIcon
+from PyQt5.QtGui import QPalette, QColor, QPixmap, QIcon, QFont
 from bs4 import BeautifulSoup
 
 # ============================================================================
@@ -27,43 +22,57 @@ def detect_column_mappings(df):
     columns = df.columns.str.lower().tolist()
     
     # Define keywords to look for
-    address_keywords = ['address', 'street', 'addr', 'location', 'road', 'avenue', 'boulevard']
-    city_keywords = ['city', 'municipality', 'town', 'metro_area', 'place']
-    state_keywords = ['state', 'state_code', 'st', 'province', 'state_abbrev']
-    zipcode_keywords = ['zip', 'zipcode', 'postal', 'zip_code', 'postcode', 'postal_code']
+    address_keywords = ['address', 'street', 'addr', 'location', 'road', 'avenue', 'boulevard', 'street_address']
+    city_keywords = ['city', 'municipality', 'town', 'metro_area', 'place', 'metro']
+    state_keywords = ['state', 'state_code', 'st', 'province', 'state_abbrev', 'state', 'region']
+    zipcode_keywords = ['zip', 'zipcode', 'postal', 'zip_code', 'postcode', 'postal_code', 'zip code', 'postal_code']
     
     mapping = {}
     original_columns = list(df.columns)
+    
+    print(f"DEBUG: Detecting columns from: {original_columns}")
     
     # Find address column
     for i, col in enumerate(columns):
         if any(keyword in col for keyword in address_keywords):
             mapping['Address'] = original_columns[i]
+            print(f"DEBUG: Found Address -> {original_columns[i]}")
             break
     
     # Find city column
     for i, col in enumerate(columns):
         if any(keyword in col for keyword in city_keywords):
             mapping['City'] = original_columns[i]
+            print(f"DEBUG: Found City -> {original_columns[i]}")
             break
     
     # Find state column
     for i, col in enumerate(columns):
         if any(keyword in col for keyword in state_keywords):
             mapping['State'] = original_columns[i]
+            print(f"DEBUG: Found State -> {original_columns[i]}")
             break
     
     # Find zipcode column
     for i, col in enumerate(columns):
         if any(keyword in col for keyword in zipcode_keywords):
             mapping['Zipcode'] = original_columns[i]
+            print(f"DEBUG: Found Zipcode -> {original_columns[i]}")
             break
     
     # Validate that all required columns are found
     required_keys = {'Address', 'City', 'State', 'Zipcode'}
-    if not required_keys.issubset(mapping.keys()):
-        missing = required_keys - mapping.keys()
-        raise ValueError(f"Could not auto-detect columns: {missing}. Available columns: {original_columns}")
+    missing = required_keys - mapping.keys()
+    
+    if missing:
+        print(f"DEBUG: Missing columns: {missing}")
+        print(f"DEBUG: Found columns: {mapping}")
+        raise ValueError(
+            f"Could not auto-detect columns: {missing}\n\n"
+            f"Found columns in file: {original_columns}\n\n"
+            f"Detected: {mapping}\n\n"
+            f"The file needs columns for: Address, City, State, and Zipcode"
+        )
     
     return mapping
 
@@ -80,6 +89,9 @@ def load_file(file_path):
         df = pd.read_excel(file_path)
     else:
         raise ValueError(f"Unsupported file format: {file_ext}")
+    
+    print(f"DEBUG: File loaded. Columns: {list(df.columns)}")
+    print(f"DEBUG: First row: {df.iloc[0].to_dict() if len(df) > 0 else 'No rows'}")
     
     # Auto-detect column mappings
     mapping = detect_column_mappings(df)
@@ -313,14 +325,17 @@ class FileProcessorThread(QThread):
             self.error.emit(f"Error: {str(e)}")
 
 # ============================================================================
-# MAIN APPLICATION
+# MAIN APPLICATION - BEAUTIFUL REDESIGN
 # ============================================================================
 
 class NYCRepresentativesApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("NYC Political Representatives Lookup")
-        self.setGeometry(100, 100, 1400, 800)
+        self.setGeometry(100, 100, 1600, 900)
+        
+        # Apply modern stylesheet
+        self.apply_modern_stylesheet()
         
         self.db_path = setup_database()
         self.results_df = None
@@ -331,9 +346,87 @@ class NYCRepresentativesApp(QMainWindow):
         
         self.init_ui()
     
+    def apply_modern_stylesheet(self):
+        """Apply beautiful modern dark theme stylesheet."""
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #1a1a2e;
+            }
+            QWidget {
+                background-color: #1a1a2e;
+                color: #ffffff;
+            }
+            QLabel {
+                color: #ffffff;
+            }
+            QPushButton {
+                border-radius: 8px;
+                border: none;
+                font-weight: bold;
+                padding: 10px 20px;
+                transition: all 0.3s ease;
+            }
+            QPushButton:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 16px rgba(0, 0, 0, 0.3);
+            }
+            QTableWidget {
+                background-color: #16213e;
+                gridline-color: #0f3460;
+                border: 1px solid #0f3460;
+                border-radius: 6px;
+            }
+            QTableWidget::item {
+                padding: 8px;
+                border-bottom: 1px solid #0f3460;
+            }
+            QTableWidget::item:selected {
+                background-color: #e94560;
+            }
+            QHeaderView::section {
+                background-color: #0f3460;
+                color: #ffffff;
+                padding: 8px;
+                border: none;
+                font-weight: bold;
+            }
+            QTabWidget::pane {
+                border: 1px solid #0f3460;
+            }
+            QTabBar::tab {
+                background-color: #0f3460;
+                color: #ffffff;
+                padding: 8px 20px;
+                margin-right: 2px;
+                border-radius: 6px 6px 0 0;
+            }
+            QTabBar::tab:selected {
+                background-color: #e94560;
+            }
+            QProgressBar {
+                border-radius: 8px;
+                border: 2px solid #0f3460;
+                background-color: #0f3460;
+                height: 25px;
+            }
+            QProgressBar::chunk {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, 
+                                           stop:0 #00d4ff, stop:1 #0099ff);
+                border-radius: 6px;
+            }
+            QScrollBar:vertical {
+                background-color: #0f3460;
+                width: 12px;
+                border-radius: 6px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #e94560;
+                border-radius: 6px;
+            }
+        """)
+    
     def get_logo_path(self):
         """Get the path to the logo file."""
-        # Try multiple possible locations
         possible_paths = [
             os.path.join(os.path.dirname(__file__), 'QEDC-Full-Logo-Primary-Color.jpg'),
             os.path.join(os.path.expanduser('~'), 'QEDC-Full-Logo-Primary-Color.jpg'),
@@ -347,108 +440,115 @@ class NYCRepresentativesApp(QMainWindow):
         return None
     
     def init_ui(self):
-        """Initialize the user interface."""
+        """Initialize the user interface with modern design."""
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
-        main_layout = QVBoxLayout()
+        main_layout = QVBoxLayout(main_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
         
-        # Top section: Logo + Header
-        top_layout = QHBoxLayout()
+        # ===== HEADER SECTION WITH LOGO =====
+        header_widget = QWidget()
+        header_widget.setStyleSheet("background-color: #0f3460; border-bottom: 3px solid #e94560;")
+        header_layout = QHBoxLayout(header_widget)
+        header_layout.setContentsMargins(30, 20, 30, 20)
+        header_layout.setSpacing(20)
         
-        # Logo section (left)
+        # Logo
         if self.logo_path:
             logo_widget = QLabel()
             pixmap = QPixmap(self.logo_path)
-            pixmap = pixmap.scaledToHeight(100, Qt.SmoothTransformation)
+            pixmap = pixmap.scaledToHeight(80, Qt.SmoothTransformation)
             logo_widget.setPixmap(pixmap)
-            logo_widget.setAlignment(Qt.AlignCenter)
-            top_layout.addWidget(logo_widget)
+            header_layout.addWidget(logo_widget)
         
-        # Header section (right)
-        header_layout = QVBoxLayout()
-        header = QLabel("NYC Political Representatives Lookup")
-        header.setStyleSheet("font-size: 20px; font-weight: bold; color: #0066cc;")
-        header_layout.addWidget(header)
+        # Title section
+        title_widget = QWidget()
+        title_layout = QVBoxLayout(title_widget)
+        title_layout.setContentsMargins(0, 0, 0, 0)
+        title_layout.setSpacing(8)
         
-        subtitle = QLabel("Upload your address CSV or XLSX and retrieve political representatives")
-        subtitle.setStyleSheet("color: #666666; font-size: 12px;")
-        header_layout.addWidget(subtitle)
+        title = QLabel("NYC Political Representatives Lookup")
+        title_font = QFont("Segoe UI", 26, QFont.Bold)
+        title.setFont(title_font)
+        title.setStyleSheet("color: #00d4ff;")
+        title_layout.addWidget(title)
         
-        top_layout.addLayout(header_layout, 1)
-        main_layout.addLayout(top_layout)
+        subtitle = QLabel("Fast. Smart. Accurate. Find your representatives instantly.")
+        subtitle_font = QFont("Segoe UI", 11)
+        subtitle.setFont(subtitle_font)
+        subtitle.setStyleSheet("color: #b0b0b0;")
+        title_layout.addWidget(subtitle)
         
-        # Separator
-        separator = QLabel("─" * 100)
-        separator.setStyleSheet("color: #cccccc;")
-        main_layout.addWidget(separator)
+        header_layout.addWidget(title_widget, 1)
+        main_layout.addWidget(header_widget)
         
-        # File upload section
-        file_layout = QHBoxLayout()
-        self.file_label = QLabel("No file chosen")
-        self.file_label.setStyleSheet("color: #999999;")
-        file_layout.addWidget(self.file_label)
+        # ===== MAIN CONTENT AREA =====
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(30, 30, 30, 30)
+        content_layout.setSpacing(20)
         
-        self.choose_file_btn = QPushButton("Choose CSV/XLSX File")
+        # File Selection Card
+        file_card = self.create_card()
+        file_card_layout = QVBoxLayout(file_card)
+        file_card_layout.setSpacing(15)
+        
+        file_label_text = QLabel("📁 SELECT YOUR FILE")
+        file_label_text.setFont(QFont("Segoe UI", 12, QFont.Bold))
+        file_label_text.setStyleSheet("color: #00d4ff;")
+        file_card_layout.addWidget(file_label_text)
+        
+        self.file_label = QLabel("No file selected • Click below to choose")
+        self.file_label.setStyleSheet("color: #808080; font-size: 11px;")
+        file_card_layout.addWidget(self.file_label)
+        
+        self.choose_file_btn = self.create_button("📂 CHOOSE CSV/XLSX FILE", "#00d4ff", "#0099cc")
         self.choose_file_btn.clicked.connect(self.choose_file)
-        self.choose_file_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #0066cc;
-                color: white;
-                padding: 8px 16px;
-                border-radius: 5px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #0052a3;
-            }
-        """)
-        file_layout.addWidget(self.choose_file_btn)
+        file_card_layout.addWidget(self.choose_file_btn)
         
-        main_layout.addLayout(file_layout)
+        content_layout.addWidget(file_card)
         
-        # Process button
-        self.process_btn = QPushButton("Process Addresses")
+        # Process Button - LARGE & PROMINENT
+        self.process_btn = self.create_button("🚀 PROCESS ADDRESSES", "#00ff00", "#00cc00")
+        self.process_btn.setMinimumHeight(50)
+        self.process_btn.setFont(QFont("Segoe UI", 14, QFont.Bold))
         self.process_btn.clicked.connect(self.process_addresses)
         self.process_btn.setEnabled(False)
-        self.process_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #008000;
-                color: white;
-                padding: 10px;
-                border-radius: 5px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #006600;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-            }
-        """)
-        main_layout.addWidget(self.process_btn)
+        content_layout.addWidget(self.process_btn)
         
-        # Progress bar
+        # Progress Bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
-        self.progress_bar.setStyleSheet("""
-            QProgressBar {
-                border: 2px solid #0066cc;
-                border-radius: 5px;
-                text-align: center;
+        self.progress_bar.setMinimumHeight(30)
+        content_layout.addWidget(self.progress_bar)
+        
+        # Status Label
+        self.status_label = QLabel("")
+        self.status_label.setFont(QFont("Segoe UI", 11))
+        self.status_label.setStyleSheet("color: #00d4ff; font-weight: bold;")
+        content_layout.addWidget(self.status_label)
+        
+        # Tabs for Results
+        self.tabs = QTabWidget()
+        self.tabs.setStyleSheet("""
+            QTabWidget::pane {
+                border: 2px solid #0f3460;
+                border-radius: 8px;
             }
-            QProgressBar::chunk {
-                background-color: #0066cc;
+            QTabBar::tab {
+                background-color: #16213e;
+                color: #ffffff;
+                padding: 12px 30px;
+                margin: 2px;
+                border-radius: 6px;
+                font-weight: bold;
+            }
+            QTabBar::tab:selected {
+                background-color: #e94560;
+                color: #ffffff;
             }
         """)
-        main_layout.addWidget(self.progress_bar)
-        
-        # Status label
-        self.status_label = QLabel("")
-        self.status_label.setStyleSheet("color: #0066cc; font-weight: bold;")
-        main_layout.addWidget(self.status_label)
-        
-        # Tabs for results and analytics
-        self.tabs = QTabWidget()
         
         # Results tab
         self.results_table = QTableWidget()
@@ -459,73 +559,97 @@ class NYCRepresentativesApp(QMainWindow):
             'State Senator', 'Senate District', 'Congressman', 'Congress District',
             'Borough President'
         ])
-        self.tabs.addTab(self.results_table, "Results")
+        self.results_table.horizontalHeader().setStretchLastSection(True)
+        self.tabs.addTab(self.results_table, "📊 RESULTS")
         
         # Analytics tab
-        self.analytics_label = QLabel("Analytics will appear here")
-        self.tabs.addTab(self.analytics_label, "Analytics")
+        self.analytics_label = QLabel("Analytics will appear after processing")
+        self.analytics_label.setStyleSheet("""
+            background-color: #16213e;
+            border-radius: 8px;
+            padding: 30px;
+            color: #b0b0b0;
+            font-size: 13px;
+        """)
+        self.tabs.addTab(self.analytics_label, "📈 ANALYTICS")
         
-        main_layout.addWidget(self.tabs)
+        content_layout.addWidget(self.tabs, 1)
         
-        # Export button
-        self.export_btn = QPushButton("Export to Excel CSV")
+        # Export Button
+        self.export_btn = self.create_button("💾 EXPORT TO EXCEL CSV", "#ff9900", "#cc7700")
+        self.export_btn.setMinimumHeight(45)
+        self.export_btn.setFont(QFont("Segoe UI", 12, QFont.Bold))
         self.export_btn.clicked.connect(self.export_results)
         self.export_btn.setEnabled(False)
-        self.export_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #ff6600;
-                color: white;
-                padding: 8px;
-                border-radius: 5px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background-color: #e55c00;
-            }
-            QPushButton:disabled {
-                background-color: #cccccc;
-            }
-        """)
-        main_layout.addWidget(self.export_btn)
+        content_layout.addWidget(self.export_btn)
         
-        # Support section - FOOTER
-        footer_layout = QHBoxLayout()
-        footer_separator = QLabel("─" * 100)
-        footer_separator.setStyleSheet("color: #cccccc;")
+        main_layout.addWidget(content_widget, 1)
         
-        support_layout = QVBoxLayout()
-        support_label = QLabel("❓ Questions or Support?")
-        support_label.setStyleSheet("font-weight: bold; color: #333333;")
-        support_layout.addWidget(support_label)
+        # ===== FOOTER SECTION =====
+        footer_widget = QWidget()
+        footer_widget.setStyleSheet("background-color: #0f3460; border-top: 2px solid #e94560;")
+        footer_layout = QVBoxLayout(footer_widget)
+        footer_layout.setContentsMargins(30, 20, 30, 20)
+        footer_layout.setSpacing(12)
         
-        self.support_btn = QPushButton("📧 Contact: Victor Prado (Vprado@Queensny.org)")
+        support_title = QLabel("❓ QUESTIONS? NEED HELP?")
+        support_title.setFont(QFont("Segoe UI", 11, QFont.Bold))
+        support_title.setStyleSheet("color: #00d4ff;")
+        footer_layout.addWidget(support_title)
+        
+        self.support_btn = self.create_button("📧 Contact: Victor Prado (Vprado@Queensny.org)", "#e94560", "#cc3355")
         self.support_btn.clicked.connect(self.open_support)
         self.support_btn.setCursor(Qt.PointingHandCursor)
-        self.support_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #ffa500;
-                color: white;
-                padding: 10px;
-                border-radius: 5px;
-                font-weight: bold;
-                text-decoration: underline;
-            }
-            QPushButton:hover {
-                background-color: #ff8c00;
+        footer_layout.addWidget(self.support_btn)
+        
+        main_layout.addWidget(footer_widget)
+    
+    def create_card(self):
+        """Create a modern card widget."""
+        card = QWidget()
+        card.setStyleSheet("""
+            QWidget {
+                background-color: #16213e;
+                border-radius: 12px;
+                border: 2px solid #0f3460;
             }
         """)
-        support_layout.addWidget(self.support_btn)
-        
-        footer_layout.addLayout(support_layout)
-        main_layout.addLayout(footer_layout)
-        
-        main_widget.setLayout(main_layout)
+        return card
+    
+    def create_button(self, text, color, hover_color):
+        """Create a modern button with gradient and hover effect."""
+        button = QPushButton(text)
+        button.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {color};
+                color: #ffffff;
+                border: none;
+                border-radius: 8px;
+                font-weight: bold;
+                padding: 12px 20px;
+                font-size: 11px;
+                transition: all 0.3s ease;
+            }}
+            QPushButton:hover {{
+                background-color: {hover_color};
+                transform: translateY(-2px);
+            }}
+            QPushButton:pressed {{
+                transform: translateY(0px);
+            }}
+            QPushButton:disabled {{
+                background-color: #404040;
+                color: #808080;
+            }}
+        """)
+        return button
     
     def open_support(self):
         """Open support contact options."""
         msg = QMessageBox(self)
         msg.setWindowTitle("Support & Contact")
         msg.setIcon(QMessageBox.Information)
+        msg.setStyleSheet("background-color: #16213e; color: #ffffff;")
         msg.setText("For Questions or Support\n\n")
         msg.setInformativeText(
             "Name: Victor Prado\n"
@@ -533,20 +657,7 @@ class NYCRepresentativesApp(QMainWindow):
             "Please include your issue description in the email."
         )
         
-        # Add copy email button
-        copy_btn = msg.addButton("Copy Email Address", QMessageBox.ActionRole)
-        close_btn = msg.addButton("Close", QMessageBox.RejectRole)
-        
         msg.exec_()
-        
-        if msg.clickedButton() == copy_btn:
-            import pyperclip
-            try:
-                # Try to copy to clipboard
-                os.system('echo Vprado@Queensny.org | clip')
-                QMessageBox.information(self, "Copied", "Email address copied to clipboard!")
-            except:
-                QMessageBox.information(self, "Email", "Vprado@Queensny.org")
     
     def choose_file(self):
         """Open file dialog to choose CSV or XLSX."""
@@ -559,8 +670,9 @@ class NYCRepresentativesApp(QMainWindow):
         
         if file_path:
             self.file_path = file_path
-            self.file_label.setText(f"✓ Selected: {os.path.basename(file_path)}")
-            self.file_label.setStyleSheet("color: #008000;")
+            file_name = os.path.basename(file_path)
+            self.file_label.setText(f"✓ Selected: {file_name}")
+            self.file_label.setStyleSheet("color: #00ff00; font-weight: bold; font-size: 12px;")
             self.process_btn.setEnabled(True)
     
     def process_addresses(self):
@@ -569,7 +681,6 @@ class NYCRepresentativesApp(QMainWindow):
             QMessageBox.warning(self, "Error", "Please select a file first")
             return
         
-        # Show progress bar
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
         self.status_label.setText("Starting...")
@@ -577,7 +688,6 @@ class NYCRepresentativesApp(QMainWindow):
         self.choose_file_btn.setEnabled(False)
         self.export_btn.setEnabled(False)
         
-        # Start worker thread
         self.processor_thread = FileProcessorThread(self.file_path, self.db_path)
         self.processor_thread.progress.connect(self.update_progress)
         self.processor_thread.status.connect(self.update_status)
@@ -595,7 +705,12 @@ class NYCRepresentativesApp(QMainWindow):
     
     def show_error(self, error_msg):
         """Show error message."""
-        QMessageBox.critical(self, "Error", error_msg)
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Error")
+        msg.setText(error_msg)
+        msg.setIcon(QMessageBox.Critical)
+        msg.setStyleSheet("background-color: #16213e; color: #ffffff;")
+        msg.exec_()
         self.progress_bar.setVisible(False)
         self.process_btn.setEnabled(True)
         self.choose_file_btn.setEnabled(True)
@@ -608,6 +723,7 @@ class NYCRepresentativesApp(QMainWindow):
         for row_idx, row in results_df.iterrows():
             for col_idx, value in enumerate(row):
                 item = QTableWidgetItem(str(value))
+                item.setForeground(QColor("#ffffff"))
                 self.results_table.setItem(row_idx, col_idx, item)
         
         self.results_table.resizeColumnsToContents()
@@ -617,18 +733,19 @@ class NYCRepresentativesApp(QMainWindow):
         nyc_count = len(results_df[results_df['NYC Area'] == 'Yes'])
         non_nyc_count = len(results_df[results_df['NYC Area'] == 'No'])
         analytics_text = (
-            f"<b>Results Summary</b><br>"
-            f"Total Addresses: {len(results_df)}<br>"
-            f"NYC Addresses: {nyc_count}<br>"
-            f"Non-NYC Addresses: {non_nyc_count}"
+            f"<div style='font-size: 14px; line-height: 2;'>"
+            f"<b style='color: #00d4ff;'>📊 RESULTS SUMMARY</b><br>"
+            f"<span style='color: #00ff00;'>✓ Total Addresses:</span> <b>{len(results_df)}</b><br>"
+            f"<span style='color: #00ff00;'>✓ NYC Addresses:</span> <b>{nyc_count}</b><br>"
+            f"<span style='color: #ff9900;'>⚠ Non-NYC Addresses:</span> <b>{non_nyc_count}</b>"
+            f"</div>"
         )
         self.analytics_label.setText(analytics_text)
-        self.analytics_label.setStyleSheet("font-size: 12px; padding: 20px;")
         
         self.progress_bar.setVisible(False)
         self.process_btn.setEnabled(True)
         self.choose_file_btn.setEnabled(True)
-        self.status_label.setText("✓ Processing complete!")
+        self.status_label.setText("✅ Processing complete! Results ready.")
     
     def export_results(self):
         """Export results to CSV."""
@@ -645,7 +762,12 @@ class NYCRepresentativesApp(QMainWindow):
         
         if file_path:
             self.results_df.to_csv(file_path, index=False)
-            QMessageBox.information(self, "Success", f"Results saved to {file_path}")
+            msg = QMessageBox(self)
+            msg.setWindowTitle("Success")
+            msg.setText(f"✅ Results saved successfully!\n\n{file_path}")
+            msg.setIcon(QMessageBox.Information)
+            msg.setStyleSheet("background-color: #16213e; color: #ffffff;")
+            msg.exec_()
 
 # ============================================================================
 # MAIN
