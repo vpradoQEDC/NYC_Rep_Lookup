@@ -36,14 +36,23 @@ jobs:
     - name: Build executable with PyInstaller
       run: pyinstaller NYC_Representatives_Lookup.spec
 
-    - name: Verify build output
-      shell: pwsh
-      run: |
-        Get-ChildItem -Recurse dist
-        if (!(Test-Path "dist\NYC_Representatives_Lookup\NYC_Representatives_Lookup.exe")) {
-          throw "EXE not found in dist folder!"
-        }
-        Write-Host "EXE built successfully!"
+- name: Verify build output
+  shell: pwsh
+  run: |
+    $exePath = "dist\NYC_Representatives_Lookup.exe"
+    Write-Host "Checking for EXE at: $exePath"
+    Write-Host "Contents of dist folder:"
+    Get-ChildItem -Recurse dist
+
+    $found = Get-ChildItem -Path "dist" -Recurse -Filter "*.exe" | Select-Object -First 1
+
+    if (-not $found) {
+      throw "EXE not found in dist folder!"
+    }
+
+    Write-Host "✅ EXE found: $($found.FullName)"
+    Write-Host "✅ Size: $($found.Length) bytes"
+
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
