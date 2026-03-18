@@ -1,15 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-block_cipher = None
-
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
     datas=[
-        ('QEDC-Full-Logo-Primary-Color.jpg',     '.'),
-        ('icon_256x256.ico',                      '.'),
-        ('Zipcodes-with-Reps-Complete.xlsx',      '.'),
+        ('QEDC-Full-Logo-Primary-Color.jpg',  '.'),
+        ('icon_256x256.ico',                   '.'),
+        ('Zipcodes-with-Reps-Complete.xlsx',   '.'),
     ],
     hiddenimports=[
         'PyQt5',
@@ -30,19 +28,15 @@ a = Analysis(
         'certifi',
         'charset_normalizer',
         'urllib3',
-        'pkg_resources.py2_warn',
     ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
     excludes=[],
-    win_no_prefer_redirects=False,
-    win_private_assemblies=False,
-    cipher=block_cipher,
     noarchive=False,
 )
 
-pyz = PYZ(a.pure, a.zlib_data, cipher=block_cipher)
+pyz = PYZ(a.pure)
 
 exe = EXE(
     pyz,
