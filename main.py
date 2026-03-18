@@ -1,9 +1,4 @@
-import sys
-import os
-import re
-import time
-import requests
-import pandas as pd
+import sys, os, re, time, requests, pandas as pd
 from bs4 import BeautifulSoup
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
@@ -12,8 +7,16 @@ from PyQt5.QtWidgets import (
 )
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QPixmap, QIcon, QColor, QFont
+import openpyxl
+from openpyxl.styles import (
+    Font as XLFont, PatternFill, Alignment as XLAlign, Border, Side
+)
+from openpyxl.utils import get_column_letter
 
 
+# ─────────────────────────────────────────────────────────────
+#  Helpers
+# ─────────────────────────────────────────────────────────────
 def resource_path(relative_path):
     try:
         base_path = sys._MEIPASS
@@ -22,6 +25,30 @@ def resource_path(relative_path):
     return os.path.join(base_path, relative_path)
 
 
+def detect_col(columns, *keywords):
+    for col in columns:
+        lower = col.lower()
+        if any(k in lower for k in keywords):
+            return col
+    return None
+
+
+def is_valid_address(address):
+    """Return True only if address looks like a real street address."""
+    if not address:
+        return False
+    bad = {"-", "'", "'-", "'\\-", "nan", "n/a", "none", "unknown", "tbd", "", "0"}
+    a = re.sub(r"^['\-\s]+", "", address).strip().lower()
+    if a in bad or len(a) < 5:
+        return False
+    if not re.search(r'\d', a):   # needs at least one digit
+        return False
+    return True
+
+
+# ─────────────────────────────────────────────────────────────
+#  ZIP Lookup  (stores ALL combos per ZIP for shared-district logic)
+# ─────────────────────────────────────────────────────────────
 def load_zip_lookup():
     zip_map = {}
     try:
@@ -36,23 +63,31 @@ def load_zip_lookup():
             zipcode = raw_zip.split("-")[0].strip().zfill(5)
             if len(zipcode) != 5 or not zipcode.isdigit():
                 continue
-            council  = str(row.get("City Council District", "")).strip()
+            council  = str(row.get("City Council District",   "")).strip()
             assembly = str(row.get("State Assembly District", "")).strip()
-            senate   = str(row.get("State Senate District", "")).strip()
-            congress = str(row.get("US House District", "")).strip()
-            if zipcode not in zip_map and council and council.lower() != "nan":
-                zip_map[zipcode] = {
-                    "City Council District":   council,
-                    "State Assembly District": assembly,
-                    "State Senate District":   senate,
-                    "US House District":       congress,
-                }
+            senate   = str(row.get("State Senate District",   "")).strip()
+            congress = str(row.get("US House District",       "")).strip()
+            if not council or council.lower() == "nan":
+                continue
+            entry = {
+                "City Council District":   council,
+                "State Assembly District": assembly,
+                "State Senate District":   senate,
+                "US House District":       congress,
+            }
+            if zipcode not in zip_map:
+                zip_map[zipcode] = []
+            if entry not in zip_map[zipcode]:
+                zip_map[zipcode].append(entry)
         print(f"ZIP lookup loaded: {len(zip_map)} unique zip codes.")
     except Exception as e:
         print(f"Error loading ZIP lookup: {e}")
     return zip_map
 
 
+# ─────────────────────────────────────────────────────────────
+#  Scrape mygovnyc.org for a full address
+# ─────────────────────────────────────────────────────────────
 def scrape_mygovnyc(address, city, state="NY"):
     result = {
         "City Council District": "", "State Assembly District": "",
@@ -85,39 +120,134 @@ def scrape_mygovnyc(address, city, state="NY"):
             if m:
                 result["City Council District"] = f"District {m.group(1)}"
                 break
-
         for el in soup.find_all(string=re.compile(r"assembly", re.I)):
             text = el.parent.get_text(" ", strip=True)
             m = re.search(r"district\s+(\d+)", text, re.I)
             if m:
                 result["State Assembly District"] = f"Assembly District {m.group(1)}"
                 break
-
         for el in soup.find_all(string=re.compile(r"state senate", re.I)):
             text = el.parent.get_text(" ", strip=True)
             m = re.search(r"district\s+(\d+)", text, re.I)
             if m:
                 result["State Senate District"] = f"Senate District {m.group(1)}"
                 break
-
-        for el in soup.find_all(string=re.compile(r"congressional|us house|u\.s\. house", re.I)):
+        for el in soup.find_all(string=re.compile(
+                r"congressional|us house|u\.s\. house", re.I)):
             text = el.parent.get_text(" ", strip=True)
             m = re.search(r"(NY\s*\d+|\d+(?:st|nd|rd|th)\s+district)", text, re.I)
             if m:
                 result["US House District"] = m.group(1).strip()
                 break
-
     except Exception as e:
         print(f"Scrape error for '{address}': {e}")
     return result
 
 
-def detect_col(columns, *keywords):
-    for col in columns:
-        lower = col.lower()
-        if any(k in lower for k in keywords):
-            return col
-    return None
+# ─────────────────────────────────────────────────────────────
+#  Scrape representative NAMES from official sites
+# ─────────────────────────────────────────────────────────────
+def scrape_rep_names():
+    names = {"council": {}, "assembly": {}, "senate": {}, "congress": {}}
+    _hdr  = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+    # --- NYC City Council ---
+    try:
+        r = requests.get("https://council.nyc.gov/members/", headers=_hdr, timeout=15)
+        soup = BeautifulSoup(r.text, "lxml")
+        for card in soup.find_all(class_=re.compile(r"council-member|member-card", re.I)):
+            txt  = card.get_text(" ", strip=True)
+            m_d  = re.search(r"district\s+(\d+)", txt, re.I)
+            m_n  = re.search(r"(?:Council Member|CM)?\s*([A-Z][a-z]+(?: [A-Z][a-z'-]+)+)", txt)
+            if m_d and m_n:
+                names["council"][m_d.group(1)] = m_n.group(1).strip()
+        if not names["council"]:
+            # fallback: grab all <h2>/<h3>/<a> near "District"
+            for el in soup.find_all(string=re.compile(r"District\s+\d+", re.I)):
+                parent = el.parent
+                m_d = re.search(r"District\s+(\d+)", el, re.I)
+                if m_d:
+                    sibling = parent.find_next(["h2", "h3", "p", "a"])
+                    if sibling:
+                        candidate = sibling.get_text(strip=True)
+                        if re.match(r"[A-Z][a-z]", candidate):
+                            names["council"][m_d.group(1)] = candidate
+    except Exception as e:
+        print(f"Council name scrape: {e}")
+
+    # --- NY State Assembly ---
+    try:
+        r    = requests.get("https://www.nyassembly.gov/mem/", headers=_hdr, timeout=15)
+        soup = BeautifulSoup(r.text, "lxml")
+        for row in soup.find_all("tr"):
+            cells = row.find_all(["td", "th"])
+            if len(cells) >= 2:
+                d_txt = cells[0].get_text(strip=True)
+                n_txt = cells[1].get_text(strip=True)
+                m = re.search(r"(\d+)", d_txt)
+                if m and re.match(r"[A-Z]", n_txt):
+                    names["assembly"][m.group(1)] = n_txt
+    except Exception as e:
+        print(f"Assembly name scrape: {e}")
+
+    # --- NY State Senate ---
+    try:
+        r    = requests.get("https://www.nysenate.gov/senators-committees",
+                            headers=_hdr, timeout=15)
+        soup = BeautifulSoup(r.text, "lxml")
+        for card in soup.find_all(class_=re.compile(r"senator|nys-senator|c-senator", re.I)):
+            txt = card.get_text(" ", strip=True)
+            m_d = re.search(r"(?:District|SD)\s*[:\-]?\s*(\d+)", txt, re.I)
+            m_n = re.search(r"Senator\s+([A-Z][a-z]+(?: [A-Z][a-z'-]+)+)", txt)
+            if not m_n:
+                m_n = re.search(r"([A-Z][a-z]+(?: [A-Z][a-z'-]+)+)", txt)
+            if m_d and m_n:
+                names["senate"][m_d.group(1)] = m_n.group(1).strip()
+    except Exception as e:
+        print(f"Senate name scrape: {e}")
+
+    # --- US House NY delegation ---
+    try:
+        r    = requests.get("https://www.house.gov/representatives",
+                            headers=_hdr, timeout=15)
+        soup = BeautifulSoup(r.text, "lxml")
+        ny_header = None
+        for tag in soup.find_all(["h2", "h3", "h4", "caption"]):
+            if "new york" in tag.get_text(strip=True).lower():
+                ny_header = tag
+                break
+        if ny_header:
+            tbl = ny_header.find_next("table")
+            if tbl:
+                for tr in tbl.find_all("tr")[1:]:
+                    cells = tr.find_all("td")
+                    if len(cells) >= 2:
+                        d_raw = cells[0].get_text(strip=True)
+                        n_raw = cells[1].get_text(strip=True)
+                        m = re.search(r"(\d+)", d_raw)
+                        if m:
+                            names["congress"][f"NY{m.group(1)}"] = n_raw
+    except Exception as e:
+        print(f"Congress name scrape: {e}")
+
+    print(f"Rep names loaded — council:{len(names['council'])} "
+          f"assembly:{len(names['assembly'])} "
+          f"senate:{len(names['senate'])} "
+          f"congress:{len(names['congress'])}")
+    return names
+
+
+# ─────────────────────────────────────────────────────────────
+#  Background threads
+# ─────────────────────────────────────────────────────────────
+class RepNameWorker(QThread):
+    names_ready = pyqtSignal(object)
+    def run(self):
+        try:
+            self.names_ready.emit(scrape_rep_names())
+        except Exception as e:
+            print(f"RepNameWorker: {e}")
+            self.names_ready.emit({"council":{}, "assembly":{}, "senate":{}, "congress":{}})
 
 
 class LookupWorker(QThread):
@@ -148,6 +278,7 @@ class LookupWorker(QThread):
             assembly_list = []
             senate_list   = []
             congress_list = []
+            method_list   = []  # "address" | "zip" | "zip_multi" | "none"
 
             for i, (_, row) in enumerate(self.df.iterrows()):
                 if self._cancelled:
@@ -158,38 +289,53 @@ class LookupWorker(QThread):
                 city    = str(row[city_col]).strip() if city_col else ""
                 state   = str(row[state_col]).strip().upper() if state_col else "NY"
 
+                # Clean leading junk from address
+                address = re.sub(r"^['\-\s]+", "", address).strip()
+                if address.lower() == "nan":
+                    address = ""
+
                 zipcode = raw_zip.split("-")[0].strip()
                 if zipcode and len(zipcode) < 5:
                     zipcode = zipcode.zfill(5)
 
                 council = assembly = senate = congress = ""
+                method  = "none"
 
-                if zipcode in self.zip_lookup:
-                    d        = self.zip_lookup[zipcode]
-                    council  = d.get("City Council District",   "")
-                    assembly = d.get("State Assembly District", "")
-                    senate   = d.get("State Senate District",   "")
-                    congress = d.get("US House District",       "")
-                elif state in ("NY", "NEW YORK") and address not in ("", "-", "'-", "nan"):
+                # ── PRIMARY: full address via mygovnyc (NY only, valid addresses) ──
+                if is_valid_address(address) and state in ("NY", "NEW YORK"):
                     self.progress.emit(
                         int(i / total * 100),
-                        f"[Web] Scraping {i+1}/{total}: {address[:40]}..."
+                        f"[Address] {i+1}/{total}: {address[:45]}..."
                     )
                     scraped  = scrape_mygovnyc(address, city, state)
                     council  = scraped["City Council District"]
                     assembly = scraped["State Assembly District"]
                     senate   = scraped["State Senate District"]
                     congress = scraped["US House District"]
+                    if council:
+                        method = "address"
                     time.sleep(0.4)
+
+                # ── FALLBACK: ZIP lookup if address failed or invalid ──
+                if not council and zipcode in self.zip_lookup:
+                    matches = self.zip_lookup[zipcode]
+                    if matches:
+                        d        = matches[0]           # first match for Results columns
+                        council  = d.get("City Council District",   "")
+                        assembly = d.get("State Assembly District", "")
+                        senate   = d.get("State Senate District",   "")
+                        congress = d.get("US House District",       "")
+                        method   = "zip_multi" if len(matches) > 1 else "zip"
 
                 council_list.append(council)
                 assembly_list.append(assembly)
                 senate_list.append(senate)
                 congress_list.append(congress)
+                method_list.append(method)
 
                 self.progress.emit(
                     int((i + 1) / total * 100),
-                    f"Processing {i+1:,} of {total:,}   (ZIP: {zipcode})"
+                    f"Processing {i+1:,} of {total:,}   ZIP:{zipcode}  [{method}]"
                 )
 
             result = self.df.copy()
@@ -197,6 +343,7 @@ class LookupWorker(QThread):
             result["State Assembly District"] = assembly_list
             result["State Senate District"]   = senate_list
             result["US House District"]       = congress_list
+            result["_match_method"]           = method_list
 
             self.result_ready.emit(result)
 
@@ -206,31 +353,30 @@ class LookupWorker(QThread):
 
 
 # ─────────────────────────────────────────────────────────────
-#  Reusable card / stat widget
+#  Stat card widget
 # ─────────────────────────────────────────────────────────────
 class StatCard(QFrame):
-    def __init__(self, label: str, value: str = "—", accent: str = "#1565C0"):
+    def __init__(self, label, value="—", accent="#1565C0"):
         super().__init__()
         self.setObjectName("statCard")
-        self.accent = accent
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(4)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(16, 12, 16, 12)
+        lay.setSpacing(4)
 
         self.val_lbl = QLabel(value)
         self.val_lbl.setAlignment(Qt.AlignCenter)
-        font = QFont("Segoe UI", 22, QFont.Bold)
-        self.val_lbl.setFont(font)
+        self.val_lbl.setFont(QFont("Segoe UI", 22, QFont.Bold))
         self.val_lbl.setStyleSheet(f"color:{accent};")
 
         self.key_lbl = QLabel(label)
         self.key_lbl.setAlignment(Qt.AlignCenter)
-        self.key_lbl.setStyleSheet("color:#546E7A;font-size:11px;font-weight:600;letter-spacing:0.5px;")
+        self.key_lbl.setStyleSheet(
+            "color:#546E7A;font-size:11px;font-weight:600;letter-spacing:0.5px;"
+        )
+        lay.addWidget(self.val_lbl)
+        lay.addWidget(self.key_lbl)
 
-        layout.addWidget(self.val_lbl)
-        layout.addWidget(self.key_lbl)
-
-    def set_value(self, v: str):
+    def set_value(self, v):
         self.val_lbl.setText(v)
 
 
@@ -240,57 +386,86 @@ class StatCard(QFrame):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.df         = None
-        self.result_df  = None
-        self.worker     = None
-        self.zip_lookup = load_zip_lookup()
+        self.df          = None
+        self.result_df   = None
+        self.worker      = None
+        self.name_worker = None
+        self.rep_names   = {"council": {}, "assembly": {}, "senate": {}, "congress": {}}
+        self.zip_lookup  = load_zip_lookup()
         self._setup_ui()
         self._apply_theme()
+        self._start_rep_name_fetch()
+
+    # ── Start background rep name fetch ─────────────────────
+    def _start_rep_name_fetch(self):
+        self.status_lbl.setText("⏳  Loading representative names in background…")
+        self.name_worker = RepNameWorker()
+        self.name_worker.names_ready.connect(self._on_names_ready)
+        self.name_worker.start()
+
+    def _on_names_ready(self, names):
+        self.rep_names = names
+        total = sum(len(v) for v in names.values())
+        self.status_lbl.setText(
+            f"✅  Ready  —  {total} representative names loaded.  "
+            f"Load a CSV or Excel file to begin."
+        )
 
     # ── UI Construction ──────────────────────────────────────
     def _setup_ui(self):
-        self.setWindowTitle("NYC Representatives Lookup  —  QEDC")
-        self.setMinimumSize(1180, 780)
+        self.setWindowTitle("Find My Rep  —  QEDC")
+        self.setMinimumSize(1200, 800)
 
         ico = resource_path("icon_256x256.ico")
         if os.path.exists(ico):
             self.setWindowIcon(QIcon(ico))
 
-        root = QWidget()
+        root   = QWidget()
         self.setCentralWidget(root)
         master = QVBoxLayout(root)
         master.setContentsMargins(0, 0, 0, 0)
         master.setSpacing(0)
 
-        # ── Top navigation bar ───────────────────────────────
+        # ── Nav bar ──────────────────────────────────────────
         nav = QFrame(); nav.setObjectName("navBar")
-        nav.setFixedHeight(64)
+        nav.setFixedHeight(80)
         nav_lay = QHBoxLayout(nav)
-        nav_lay.setContentsMargins(24, 0, 24, 0)
+        nav_lay.setContentsMargins(28, 0, 28, 0)
 
         logo_lbl = QLabel()
-        logo_path = resource_path("QEDC-Full-Logo-Primary-Color.jpg")
+        logo_path = resource_path("QEDC - Full Logo (Primary Color).png")
         if os.path.exists(logo_path):
-            px = QPixmap(logo_path).scaled(160, 48, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            px = QPixmap(logo_path).scaled(
+                220, 70, Qt.KeepAspectRatio, Qt.SmoothTransformation
+            )
             logo_lbl.setPixmap(px)
         else:
             logo_lbl.setText("QEDC")
-            logo_lbl.setStyleSheet("font-size:20px;font-weight:bold;color:#1565C0;")
+            logo_lbl.setStyleSheet("font-size:22px;font-weight:bold;color:#1565C0;")
 
-        app_title = QLabel("NYC Representatives Lookup")
+        app_title = QLabel("Find My Rep")
         app_title.setObjectName("navTitle")
 
+        # Support button
+        self.support_btn = QPushButton("💬  Support")
+        self.support_btn.setObjectName("btnSupport")
+        self.support_btn.setFixedHeight(38)
+        self.support_btn.setToolTip("Victor Prado — vprado@queensny.org\nClick to copy email")
+        self.support_btn.clicked.connect(self._copy_support_email)
+
         nav_lay.addWidget(logo_lbl)
-        nav_lay.addStretch()
+        nav_lay.addSpacing(20)
         nav_lay.addWidget(app_title)
+        nav_lay.addStretch()
+        nav_lay.addWidget(self.support_btn)
 
-        # ── Content area (padded) ────────────────────────────
+        # ── Content ──────────────────────────────────────────
         content_wrap = QWidget(); content_wrap.setObjectName("contentArea")
-        content = QVBoxLayout(content_wrap)
+        content      = QVBoxLayout(content_wrap)
         content.setContentsMargins(28, 20, 28, 20)
-        content.setSpacing(16)
+        content.setSpacing(14)
 
-        # ── Toolbar card ─────────────────────────────────────
+        # Toolbar card
         toolbar = QFrame(); toolbar.setObjectName("toolCard")
         tb_lay  = QHBoxLayout(toolbar)
         tb_lay.setContentsMargins(20, 14, 20, 14)
@@ -298,7 +473,7 @@ class MainWindow(QMainWindow):
 
         self.load_btn = QPushButton("  📂  Load File")
         self.load_btn.setObjectName("btnPrimary")
-        self.load_btn.setFixedHeight(40)
+        self.load_btn.setFixedHeight(42)
         self.load_btn.clicked.connect(self.load_file)
 
         self.file_lbl = QLabel("No file loaded — supported formats: CSV, XLSX")
@@ -307,57 +482,54 @@ class MainWindow(QMainWindow):
 
         self.run_btn = QPushButton("  ▶  Run Lookup")
         self.run_btn.setObjectName("btnSuccess")
-        self.run_btn.setFixedHeight(40)
+        self.run_btn.setFixedHeight(42)
         self.run_btn.setEnabled(False)
         self.run_btn.clicked.connect(self.run_lookup)
 
         self.export_btn = QPushButton("  💾  Export Excel")
         self.export_btn.setObjectName("btnWarning")
-        self.export_btn.setFixedHeight(40)
+        self.export_btn.setFixedHeight(42)
         self.export_btn.setEnabled(False)
         self.export_btn.clicked.connect(self.export_results)
 
         for w in [self.load_btn, self.file_lbl, self.run_btn, self.export_btn]:
             tb_lay.addWidget(w)
 
-        # ── Progress bar ─────────────────────────────────────
+        # Progress card
         prog_card = QFrame(); prog_card.setObjectName("toolCard")
         prog_lay  = QVBoxLayout(prog_card)
         prog_lay.setContentsMargins(20, 10, 20, 10)
-        prog_lay.setSpacing(4)
+        prog_lay.setSpacing(5)
+
+        self.status_lbl = QLabel("Initializing…")
+        self.status_lbl.setObjectName("statusLabel")
 
         self.prog_bar = QProgressBar()
         self.prog_bar.setFixedHeight(8)
         self.prog_bar.setTextVisible(False)
         self.prog_bar.setVisible(False)
 
-        self.status_lbl = QLabel("Load a CSV or Excel file to begin.")
-        self.status_lbl.setObjectName("statusLabel")
-
         prog_lay.addWidget(self.status_lbl)
         prog_lay.addWidget(self.prog_bar)
 
-        # ── Stat cards row ───────────────────────────────────
-        stats_row = QHBoxLayout()
-        stats_row.setSpacing(12)
-
-        self.card_total     = StatCard("TOTAL RECORDS",      "—",      "#1565C0")
-        self.card_matched   = StatCard("MATCHED",            "—",      "#2E7D32")
-        self.card_unmatched = StatCard("UNMATCHED",          "—",      "#C62828")
+        # Stat cards
+        stats_row = QHBoxLayout(); stats_row.setSpacing(12)
+        self.card_total     = StatCard("TOTAL RECORDS",    "—",   "#1565C0")
+        self.card_matched   = StatCard("MATCHED",          "—",   "#2E7D32")
+        self.card_zip_fb    = StatCard("ZIP FALLBACK",     "—",   "#E65100")
         self.card_cache     = StatCard("ZIP CACHE ENTRIES",
-                                       f"{len(self.zip_lookup):,}",    "#6A1B9A")
-
-        for c in [self.card_total, self.card_matched, self.card_unmatched, self.card_cache]:
+                                        f"{len(self.zip_lookup):,}", "#6A1B9A")
+        for c in [self.card_total, self.card_matched,
+                  self.card_zip_fb, self.card_cache]:
             stats_row.addWidget(c)
 
-        # ── Section header ───────────────────────────────────
         tbl_hdr = QLabel("Results Preview")
         tbl_hdr.setObjectName("sectionHeader")
 
-        # ── Table ─────────────────────────────────────────────
         self.table = QTableWidget()
         self.table.setObjectName("dataTable")
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeToContents)
+        self.table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeToContents)
         self.table.setAlternatingRowColors(True)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
@@ -365,12 +537,13 @@ class MainWindow(QMainWindow):
         self.table.verticalHeader().setDefaultSectionSize(32)
         self.table.verticalHeader().setVisible(False)
 
-        # ── Footer ────────────────────────────────────────────
-        footer = QLabel("Queens Economic Development Corporation  •  NYC Representatives Lookup Tool")
+        footer = QLabel(
+            "Queens Economic Development Corporation  •  Find My Rep Tool  "
+            "•  Support: Victor Prado — vprado@queensny.org"
+        )
         footer.setObjectName("footerLabel")
         footer.setAlignment(Qt.AlignCenter)
 
-        # Assembly
         content.addWidget(toolbar)
         content.addWidget(prog_card)
         content.addLayout(stats_row)
@@ -385,30 +558,23 @@ class MainWindow(QMainWindow):
     # ── Theme ────────────────────────────────────────────────
     def _apply_theme(self):
         self.setStyleSheet("""
-        /* ── Global ── */
         QMainWindow, QWidget {
             background: #F4F6F9;
             color: #263238;
             font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
             font-size: 13px;
         }
-
-        /* ── Nav bar ── */
         #navBar {
             background: #FFFFFF;
             border-bottom: 2px solid #E3E8EF;
         }
         #navTitle {
-            font-size: 17px;
+            font-size: 22px;
             font-weight: 700;
             color: #1565C0;
             letter-spacing: 0.3px;
         }
-
-        /* ── Content area ── */
         #contentArea { background: #F4F6F9; }
-
-        /* ── Cards ── */
         #toolCard {
             background: #FFFFFF;
             border-radius: 10px;
@@ -420,8 +586,6 @@ class MainWindow(QMainWindow):
             border: 1px solid #DDE3ED;
             min-width: 160px;
         }
-
-        /* ── Buttons ── */
         QPushButton {
             padding: 0 20px;
             border-radius: 7px;
@@ -430,146 +594,95 @@ class MainWindow(QMainWindow):
             border: none;
             min-width: 130px;
         }
-        #btnPrimary {
-            background: #1565C0;
-            color: #FFFFFF;
-        }
-        #btnPrimary:hover  { background: #1976D2; }
-        #btnPrimary:pressed{ background: #0D47A1; }
-
-        #btnSuccess {
-            background: #2E7D32;
-            color: #FFFFFF;
-        }
-        #btnSuccess:hover  { background: #388E3C; }
-        #btnSuccess:pressed{ background: #1B5E20; }
-        #btnSuccess:disabled{ background: #BDBDBD; color: #757575; }
-
-        #btnWarning {
-            background: #E65100;
-            color: #FFFFFF;
-        }
-        #btnWarning:hover  { background: #F4511E; }
-        #btnWarning:pressed{ background: #BF360C; }
-        #btnWarning:disabled{ background: #BDBDBD; color: #757575; }
-
-        /* ── File label ── */
-        #fileLabel {
-            color: #455A64;
-            font-size: 12px;
-            padding: 0 8px;
-        }
-
-        /* ── Progress ── */
+        #btnPrimary  { background:#1565C0; color:#FFFFFF; }
+        #btnPrimary:hover   { background:#1976D2; }
+        #btnPrimary:pressed { background:#0D47A1; }
+        #btnSuccess  { background:#2E7D32; color:#FFFFFF; }
+        #btnSuccess:hover   { background:#388E3C; }
+        #btnSuccess:pressed { background:#1B5E20; }
+        #btnSuccess:disabled{ background:#BDBDBD; color:#757575; }
+        #btnWarning  { background:#E65100; color:#FFFFFF; }
+        #btnWarning:hover   { background:#F4511E; }
+        #btnWarning:pressed { background:#BF360C; }
+        #btnWarning:disabled{ background:#BDBDBD; color:#757575; }
+        #btnSupport  { background:#6A1B9A; color:#FFFFFF; min-width:110px; }
+        #btnSupport:hover   { background:#7B1FA2; }
+        #btnSupport:pressed { background:#4A148C; }
+        #fileLabel  { color:#455A64; font-size:12px; padding:0 8px; }
         QProgressBar {
-            background: #E3E8EF;
-            border-radius: 4px;
-            border: none;
+            background:#E3E8EF; border-radius:4px; border:none;
         }
         QProgressBar::chunk {
-            background: qlineargradient(
-                x1:0, y1:0, x2:1, y2:0,
-                stop:0 #1565C0, stop:1 #42A5F5
-            );
-            border-radius: 4px;
+            background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                stop:0 #1565C0, stop:1 #42A5F5);
+            border-radius:4px;
         }
-
-        /* ── Status ── */
-        #statusLabel {
-            color: #546E7A;
-            font-size: 12px;
-        }
-
-        /* ── Section header ── */
-        #sectionHeader {
-            font-size: 14px;
-            font-weight: 700;
-            color: #37474F;
-            padding: 4px 2px;
-        }
-
-        /* ── Table ── */
+        #statusLabel { color:#546E7A; font-size:12px; }
+        #sectionHeader { font-size:14px; font-weight:700; color:#37474F; padding:4px 2px; }
         #dataTable {
-            background: #FFFFFF;
-            alternate-background-color: #F8FAFC;
-            border: 1px solid #DDE3ED;
-            border-radius: 10px;
-            gridline-color: transparent;
-            outline: none;
+            background:#FFFFFF;
+            alternate-background-color:#F8FAFC;
+            border:1px solid #DDE3ED;
+            border-radius:10px;
+            gridline-color:transparent;
+            outline:none;
         }
         QHeaderView::section {
-            background: #1565C0;
-            color: #FFFFFF;
-            padding: 10px 12px;
-            border: none;
-            font-weight: 700;
-            font-size: 12px;
-            letter-spacing: 0.4px;
+            background:#1565C0; color:#FFFFFF;
+            padding:10px 12px; border:none;
+            font-weight:700; font-size:12px; letter-spacing:0.4px;
         }
-        QHeaderView::section:first { border-top-left-radius: 8px; }
-        QHeaderView::section:last  { border-top-right-radius: 8px; }
-
+        QHeaderView::section:first { border-top-left-radius:8px; }
+        QHeaderView::section:last  { border-top-right-radius:8px; }
         QTableWidget::item {
-            padding: 6px 10px;
-            border-bottom: 1px solid #EEF1F5;
+            padding:6px 10px;
+            border-bottom:1px solid #EEF1F5;
         }
-        QTableWidget::item:selected {
-            background: #BBDEFB;
-            color: #0D47A1;
-        }
-
+        QTableWidget::item:selected { background:#BBDEFB; color:#0D47A1; }
         QScrollBar:vertical {
-            background: #F4F6F9;
-            width: 8px;
-            margin: 0;
-            border-radius: 4px;
+            background:#F4F6F9; width:8px; border-radius:4px;
         }
         QScrollBar::handle:vertical {
-            background: #B0BEC5;
-            border-radius: 4px;
-            min-height: 30px;
+            background:#B0BEC5; border-radius:4px; min-height:30px;
         }
-        QScrollBar::handle:vertical:hover { background: #78909C; }
-        QScrollBar::add-line:vertical,
-        QScrollBar::sub-line:vertical { height: 0; }
-
+        QScrollBar::handle:vertical:hover { background:#78909C; }
+        QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height:0; }
         QScrollBar:horizontal {
-            background: #F4F6F9;
-            height: 8px;
-            border-radius: 4px;
+            background:#F4F6F9; height:8px; border-radius:4px;
         }
-        QScrollBar::handle:horizontal {
-            background: #B0BEC5;
-            border-radius: 4px;
-        }
-        QScrollBar::add-line:horizontal,
-        QScrollBar::sub-line:horizontal { width: 0; }
-
-        /* ── Footer ── */
-        #footerLabel {
-            color: #90A4AE;
-            font-size: 11px;
-            padding: 8px 0 2px 0;
-        }
-
-        /* ── Message boxes ── */
-        QMessageBox {
-            background: #FFFFFF;
-        }
+        QScrollBar::handle:horizontal { background:#B0BEC5; border-radius:4px; }
+        QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width:0; }
+        #footerLabel { color:#90A4AE; font-size:11px; padding:8px 0 2px 0; }
+        QMessageBox { background:#FFFFFF; }
         QMessageBox QPushButton {
-            min-width: 80px;
-            padding: 6px 16px;
-            background: #1565C0;
-            color: white;
-            border-radius: 6px;
+            min-width:80px; padding:6px 16px;
+            background:#1565C0; color:white; border-radius:6px;
+        }
+        QToolTip {
+            background:#FFFFFF; color:#263238;
+            border:1px solid #DDE3ED; border-radius:6px;
+            padding:6px 10px; font-size:12px;
         }
         """)
 
-    # ── Slots ────────────────────────────────────────────────
+    # ── Support button ───────────────────────────────────────
+    def _copy_support_email(self):
+        email = "vprado@queensny.org"
+        QApplication.clipboard().setText(email)
+        QMessageBox.information(
+            self,
+            "Support Contact",
+            f"<b>Victor Prado</b><br>"
+            f"Queens Economic Development Corporation<br><br>"
+            f"📧  <b>{email}</b><br><br>"
+            f"✅  Email address copied to clipboard!"
+        )
+
+    # ── Load file ────────────────────────────────────────────
     def load_file(self):
         path, _ = QFileDialog.getOpenFileName(
             self, "Open Data File", "",
-            "Data Files (*.csv *.xlsx *.xls);;CSV Files (*.csv);;Excel Files (*.xlsx *.xls)"
+            "Data Files (*.csv *.xlsx *.xls);;CSV (*.csv);;Excel (*.xlsx *.xls)"
         )
         if not path:
             return
@@ -580,17 +693,23 @@ class MainWindow(QMainWindow):
                 self.df = pd.read_csv(path, dtype=str, encoding="utf-8-sig")
             self.df.fillna("", inplace=True)
             self._show_table(self.df.head(100))
-            self.file_lbl.setText(f"📄  {os.path.basename(path)}   ({len(self.df):,} rows)")
+            self.file_lbl.setText(
+                f"📄  {os.path.basename(path)}   ({len(self.df):,} rows)"
+            )
             self.run_btn.setEnabled(True)
             self.export_btn.setEnabled(False)
             self.result_df = None
             self.card_total.set_value(f"{len(self.df):,}")
             self.card_matched.set_value("—")
-            self.card_unmatched.set_value("—")
-            self.status_lbl.setText(f"✅  File loaded — {len(self.df):,} rows. Click  ▶ Run Lookup  to begin.")
+            self.card_zip_fb.set_value("—")
+            self.status_lbl.setText(
+                f"✅  File loaded — {len(self.df):,} rows.  "
+                f"Click  ▶ Run Lookup  to begin."
+            )
         except Exception as e:
             QMessageBox.critical(self, "Load Error", str(e))
 
+    # ── Table display ────────────────────────────────────────
     def _show_table(self, df):
         self.table.clear()
         if df is None or df.empty:
@@ -599,13 +718,15 @@ class MainWindow(QMainWindow):
             "City Council District", "State Assembly District",
             "State Senate District", "US House District"
         }
+        SKIP = {"_match_method"}
+        cols = [c for c in df.columns if c not in SKIP]
         self.table.setRowCount(len(df))
-        self.table.setColumnCount(len(df.columns))
-        self.table.setHorizontalHeaderLabels(list(df.columns))
+        self.table.setColumnCount(len(cols))
+        self.table.setHorizontalHeaderLabels(cols)
         for r in range(len(df)):
-            for c, col_name in enumerate(df.columns):
-                val = str(df.iloc[r, c])
-                if val == "nan":
+            for c, col_name in enumerate(cols):
+                val = str(df.iloc[r][col_name])
+                if val in ("nan", ""):
                     val = ""
                 item = QTableWidgetItem(val)
                 if col_name in HIGHLIGHT:
@@ -618,6 +739,7 @@ class MainWindow(QMainWindow):
                         item.setBackground(QColor("#FFF3E0"))
                 self.table.setItem(r, c, item)
 
+    # ── Run lookup ───────────────────────────────────────────
     def run_lookup(self):
         if self.df is None:
             return
@@ -637,18 +759,22 @@ class MainWindow(QMainWindow):
         self.status_lbl.setText(msg)
 
     def _on_result(self, df):
-        self.result_df = df
-        d_col    = "City Council District"
-        matched  = (df[d_col].str.strip() != "").sum() if d_col in df.columns else 0
-        unmatched = len(df) - matched
+        self.result_df  = df
+        d_col           = "City Council District"
+        method_col      = "_match_method"
+        matched         = (df[d_col].str.strip() != "").sum() if d_col in df.columns else 0
+        zip_fb          = (df[method_col].isin(["zip", "zip_multi"])).sum() \
+                            if method_col in df.columns else 0
         self._show_table(df.head(200))
         self.card_total.set_value(f"{len(df):,}")
         self.card_matched.set_value(f"{matched:,}")
-        self.card_unmatched.set_value(f"{unmatched:,}")
+        self.card_zip_fb.set_value(f"{zip_fb:,}")
         self.prog_bar.setValue(100)
         self.status_lbl.setText(
-            f"✅  Lookup complete  —  {matched:,} matched  |  {unmatched:,} unmatched  "
-            f"(showing first 200 rows in preview)"
+            f"✅  Lookup complete  —  {matched:,} matched  |  "
+            f"{zip_fb:,} via ZIP fallback  |  "
+            f"{len(df)-matched:,} unmatched  "
+            f"(showing first 200 rows)"
         )
         self.run_btn.setEnabled(True)
         self.export_btn.setEnabled(True)
@@ -658,20 +784,170 @@ class MainWindow(QMainWindow):
         self.run_btn.setEnabled(True)
         self.prog_bar.setVisible(False)
 
+    # ── Export with Summary sheet ────────────────────────────
     def export_results(self):
         if self.result_df is None:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Results", "results.xlsx", "Excel Workbook (*.xlsx)"
+            self, "Save Results", "Find_My_Rep_Results.xlsx",
+            "Excel Workbook (*.xlsx)"
         )
         if not path:
             return
         try:
-            self.result_df.to_excel(path, index=False, sheet_name="Results")
-            QMessageBox.information(self, "Export Successful",
-                                    f"File saved successfully:\n{path}")
+            export_df  = self.result_df.drop(
+                columns=["_match_method"], errors="ignore"
+            )
+            summary_df = self._build_summary(self.result_df)
+
+            with pd.ExcelWriter(path, engine="openpyxl") as writer:
+                export_df.to_excel(writer, index=False, sheet_name="Results")
+                summary_df.to_excel(writer, index=False, sheet_name="Summary")
+
+            self._format_excel(path)
+            QMessageBox.information(
+                self, "Export Successful", f"File saved:\n{path}"
+            )
         except Exception as e:
             QMessageBox.critical(self, "Save Error", str(e))
+
+    # ── Build Summary DataFrame ──────────────────────────────
+    def _build_summary(self, df):
+        zip_col = detect_col(list(df.columns), "zip")
+        council_counts  = {}
+        assembly_counts = {}
+        senate_counts   = {}
+        congress_counts = {}
+
+        for _, row in df.iterrows():
+            method   = str(row.get("_match_method", "address"))
+            council  = str(row.get("City Council District",   "")).strip()
+            assembly = str(row.get("State Assembly District", "")).strip()
+            senate   = str(row.get("State Senate District",   "")).strip()
+            congress = str(row.get("US House District",       "")).strip()
+
+            if method == "zip_multi" and zip_col:
+                # Count under ALL reps that share this ZIP
+                raw_zip = str(row[zip_col]).strip()
+                zipcode = raw_zip.split("-")[0].strip().zfill(5)
+                for match in self.zip_lookup.get(zipcode, []):
+                    c = match.get("City Council District",   "")
+                    a = match.get("State Assembly District", "")
+                    s = match.get("State Senate District",   "")
+                    g = match.get("US House District",       "")
+                    if c: council_counts[c]  = council_counts.get(c, 0)  + 1
+                    if a: assembly_counts[a] = assembly_counts.get(a, 0) + 1
+                    if s: senate_counts[s]   = senate_counts.get(s, 0)   + 1
+                    if g: congress_counts[g] = congress_counts.get(g, 0) + 1
+            else:
+                if council:  council_counts[council]   = council_counts.get(council, 0)   + 1
+                if assembly: assembly_counts[assembly] = assembly_counts.get(assembly, 0) + 1
+                if senate:   senate_counts[senate]     = senate_counts.get(senate, 0)     + 1
+                if congress: congress_counts[congress] = congress_counts.get(congress, 0) + 1
+
+        def sort_key(d_str):
+            m = re.search(r"(\d+)", d_str)
+            return int(m.group(1)) if m else 9999
+
+        def get_council_name(dist):
+            m = re.search(r"(\d+)", dist)
+            return self.rep_names["council"].get(m.group(1), "—") if m else "—"
+
+        def get_assembly_name(dist):
+            m = re.search(r"(\d+)", dist)
+            return self.rep_names["assembly"].get(m.group(1), "—") if m else "—"
+
+        def get_senate_name(dist):
+            m = re.search(r"(\d+)", dist)
+            return self.rep_names["senate"].get(m.group(1), "—") if m else "—"
+
+        def get_congress_name(dist):
+            key = dist.upper().replace(" ", "")
+            return self.rep_names["congress"].get(key, "—")
+
+        rows = []
+
+        # Header rows for each section
+        for section, counts, name_fn in [
+            ("NYC City Council",  council_counts,  get_council_name),
+            ("NY State Assembly", assembly_counts, get_assembly_name),
+            ("NY State Senate",   senate_counts,   get_senate_name),
+            ("US House (NY)",     congress_counts, get_congress_name),
+        ]:
+            rows.append({
+                "Section":            section,
+                "District":           "",
+                "Representative Name": "",
+                "Record Count":       "",
+            })
+            for dist, cnt in sorted(counts.items(), key=lambda x: sort_key(x[0])):
+                rows.append({
+                    "Section":            "",
+                    "District":           dist,
+                    "Representative Name": name_fn(dist),
+                    "Record Count":       cnt,
+                })
+            rows.append({
+                "Section": "", "District": "",
+                "Representative Name": "", "Record Count": "",
+            })
+
+        return pd.DataFrame(rows)
+
+    # ── Format Excel workbook ────────────────────────────────
+    def _format_excel(self, path):
+        wb   = openpyxl.load_workbook(path)
+        blue  = PatternFill("solid", fgColor="1565C0")
+        green = PatternFill("solid", fgColor="2E7D32")
+        grey  = PatternFill("solid", fgColor="ECEFF1")
+        white_font  = XLFont(bold=True, color="FFFFFF", size=11)
+        header_font = XLFont(bold=True, color="FFFFFF", size=11)
+        bold_blue   = XLFont(bold=True, color="1565C0", size=11)
+        thin = Border(
+            bottom=Side(border_style="thin", color="DDE3ED")
+        )
+
+        # Results sheet
+        ws = wb["Results"]
+        for cell in ws[1]:
+            cell.fill       = blue
+            cell.font       = header_font
+            cell.alignment  = XLAlign(horizontal="center", vertical="center")
+        for col in ws.columns:
+            max_len = max((len(str(c.value or "")) for c in col), default=10)
+            ws.column_dimensions[get_column_letter(col[0].column)].width = min(
+                max_len + 4, 50
+            )
+        ws.freeze_panes = "A2"
+
+        # Summary sheet
+        ws2 = wb["Summary"]
+        for row in ws2.iter_rows():
+            for cell in row:
+                section_val = ws2.cell(row=cell.row, column=1).value
+                if section_val and str(section_val).strip():
+                    cell.fill      = green
+                    cell.font      = white_font
+                    cell.alignment = XLAlign(horizontal="left", vertical="center")
+                else:
+                    cell.alignment = XLAlign(horizontal="left", vertical="center")
+                    if cell.column == 4:  # Record Count
+                        cell.alignment = XLAlign(horizontal="center")
+
+        # Format header row of Summary
+        for cell in ws2[1]:
+            cell.fill      = blue
+            cell.font      = header_font
+            cell.alignment = XLAlign(horizontal="center", vertical="center")
+
+        for col in ws2.columns:
+            max_len = max((len(str(c.value or "")) for c in col), default=10)
+            ws2.column_dimensions[get_column_letter(col[0].column)].width = min(
+                max_len + 4, 60
+            )
+        ws2.freeze_panes = "A2"
+
+        wb.save(path)
 
 
 def main():
