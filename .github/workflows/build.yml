@@ -8,32 +8,41 @@ on:
 jobs:
   build:
     runs-on: windows-latest
-    
+
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
-        python-version: '3.9'
-    
+        python-version: '3.11'
+
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip
-        pip install pyinstaller PyQt5 pandas requests beautifulsoup4 openpyxl lxml
-    
-    - name: Build executable with PyInstaller (with spec file)
+        python -m pip install --upgrade pip setuptools wheel
+        pip install pyinstaller
+        pip install PyQt5==5.15.10 pandas requests beautifulsoup4 openpyxl lxml
+
+    - name: Verify required files exist
+      shell: pwsh
       run: |
-        pyinstaller NYC_Representatives_Lookup.spec
-    
-    - name: Verify build artifacts
-      run: |
-        dir dist\NYC_Representatives_Lookup\
-        dir dist\NYC_Representatives_Lookup\ /s
-    
+        if (!(Test-Path "main.py")) { throw "MISSING: main.py" }
+        if (!(Test-Path "NYC_Representatives_Lookup.spec")) { throw "MISSING: NYC_Representatives_Lookup.spec" }
+        if (!(Test-Path "icon_256x256.ico")) { throw "MISSING: icon_256x256.ico" }
+        if (!(Test-Path "QEDC-Full-Logo-Primary-Color.jpg")) { throw "MISSING: QEDC-Full-Logo-Primary-Color.jpg" }
+        Write-Host "All required files found!"
+
+    - name: Build executable with PyInstaller
+      run: pyinstaller NYC_Representatives_Lookup.spec
+
+    - name: Verify build output
+      shell: pwsh
+      run: Get-ChildItem -Recurse dist
+
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
         name: NYC_Representatives_Lookup
         path: dist/NYC_Representatives_Lookup/
+        if-no-files-found: error
         retention-days: 90
