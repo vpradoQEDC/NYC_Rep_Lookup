@@ -1,10 +1,8 @@
-name: Build Windows EXE
+name: Build Executable with Icon
 
 on:
   push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
@@ -12,27 +10,41 @@ jobs:
     runs-on: windows-latest
     
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+    - uses: actions/checkout@v3
     
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
         python-version: '3.9'
-        cache: 'pip'
     
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
+        pip install pyinstaller PyQt5 pandas requests beautifulsoup4 openpyxl lxml
     
-    - name: Build EXE with PyInstaller
+    - name: Build executable with PyInstaller (with spec file)
       run: |
-        pyinstaller --onefile --windowed --name NYC_Representatives_Lookup main.py
+        pyinstaller NYC_Representatives_Lookup.spec
     
-    - name: Upload EXE as artifact
-      uses: actions/upload-artifact@v4
+    - name: Verify build artifacts
+      run: |
+        dir dist\NYC_Representatives_Lookup\
+        dir dist\NYC_Representatives_Lookup\ /s
+    
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v3
       with:
         name: NYC_Representatives_Lookup
-        path: dist/NYC_Representatives_Lookup.exe
-        retention-days: 30
+        path: dist/NYC_Representatives_Lookup/
+        retention-days: 90
+    
+    - name: Create Release (optional)
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: actions/create-release@v1
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ github.ref }}
+        release_name: NYC Representatives Lookup ${{ github.ref }}
+        draft: false
+        prerelease: false
