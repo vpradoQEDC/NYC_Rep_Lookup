@@ -5,20 +5,6 @@ from PyInstaller.utils.hooks import collect_data_files
 
 block_cipher = None
 
-# ── Data files ────────────────────────────────────────────────────────────────
-added_files = [
-    # ── Your project assets (all land in the root of the bundle) ──
-    ('QEDC - Full Logo (Primary Color).png',  '.'),
-    ('generated-image.png',                    '.'),
-    ('icon_256x256.ico',                       '.'),
-    ('Zipcodes-with-Reps-Complete.xlsx',        '.'),
-
-    # ── Runtime dependencies ──
-    *collect_data_files('openpyxl'),
-    *collect_data_files('certifi'),
-]
-
-# ── Hidden imports ────────────────────────────────────────────────────────────
 hidden = [
     'openpyxl',
     'openpyxl.styles',
@@ -32,6 +18,9 @@ hidden = [
     'certifi',
     'urllib3',
     'charset_normalizer',
+    'email',
+    'email.mime',
+    'email.mime.text',
     'pandas',
     'pandas._libs.tslibs.timedeltas',
     'pandas._libs.tslibs.np_datetime',
@@ -44,7 +33,6 @@ hidden = [
     'PyQt5.sip',
 ]
 
-# ── Analysis ──────────────────────────────────────────────────────────────────
 a = Analysis(
     ['main.py'],
     pathex=[os.path.abspath('.')],
@@ -68,7 +56,6 @@ a = Analysis(
         'tkinter',
         'test',
         'unittest',
-        'email',
         'xmlrpc',
         'pydoc',
         'doctest',
@@ -83,14 +70,12 @@ a = Analysis(
     noarchive=False,
 )
 
-# ── PYZ archive ───────────────────────────────────────────────────────────────
 pyz = PYZ(
     a.pure,
     a.zipped_data,
     cipher=block_cipher,
 )
 
-# ── Single-file EXE ───────────────────────────────────────────────────────────
 exe = EXE(
     pyz,
     a.scripts,
@@ -117,5 +102,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='icon_256x256.ico',           # ← matches your exact .ico filename
+    icon='icon_256x256.ico',
 )
