@@ -10,7 +10,7 @@ jobs:
     runs-on: windows-latest
     
     steps:
-    - uses: actions/checkout@v3
+    - uses: actions/checkout@v4
     
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -32,19 +32,8 @@ jobs:
         dir dist\NYC_Representatives_Lookup\ /s
     
     - name: Upload build artifacts
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: NYC_Representatives_Lookup
         path: dist/NYC_Representatives_Lookup/
         retention-days: 90
-    
-    - name: Create Release (optional)
-      if: startsWith(github.ref, 'refs/tags/')
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref }}
-        release_name: NYC Representatives Lookup ${{ github.ref }}
-        draft: false
-        prerelease: false
