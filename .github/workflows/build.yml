@@ -1,7 +1,9 @@
-name: Build Executable with Icon
+name: Build NYC Representatives Lookup
 
 on:
   push:
+    branches: [ main ]
+  pull_request:
     branches: [ main ]
   workflow_dispatch:
 
@@ -10,54 +12,59 @@ jobs:
     runs-on: windows-latest
 
     steps:
-    - uses: actions/checkout@v4
+      - name: Run actions/checkout@v4
+        uses: actions/checkout@v4
 
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.11'
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
-    - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip setuptools wheel
-        pip install pyinstaller
-        pip install PyQt5==5.15.10 pandas requests beautifulsoup4 openpyxl lxml certifi
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyqt5 requests beautifulsoup4 pandas openpyxl lxml certifi pyinstaller
 
-    - name: Verify required files exist
-      shell: pwsh
-      run: |
-        if (!(Test-Path "main.py"))                              { throw "MISSING: main.py" }
-        if (!(Test-Path "NYC_Representatives_Lookup.spec"))      { throw "MISSING: NYC_Representatives_Lookup.spec" }
-        if (!(Test-Path "icon_256x256.ico"))                     { throw "MISSING: icon_256x256.ico" }
-        if (!(Test-Path "QEDC-Full-Logo-Primary-Color.jpg"))     { throw "MISSING: QEDC-Full-Logo-Primary-Color.jpg" }
-        if (!(Test-Path "Zipcodes-with-Reps-Complete.xlsx"))     { throw "MISSING: Zipcodes-with-Reps-Complete.xlsx" }
-        Write-Host "All required files found!"
+      - name: Verify required files exist
+        shell: pwsh
+        run: |
+          $files = @(
+            "main.py",
+            "NYC_Representatives_Lookup.spec",
+            "QEDC - Full Logo (Primary Color).png",
+            "generated-image.png",
+            "icon_256x256.ico",
+            "Zipcodes-with-Reps-Complete.xlsx"
+          )
+          foreach ($f in $files) {
+            if (-not (Test-Path $f)) {
+              Write-Host "MISSING: $f"
+              exit 1
+            }
+            Write-Host "Found: $f"
+          }
 
-    - name: Build executable with PyInstaller
-      run: pyinstaller NYC_Representatives_Lookup.spec
+      - name: Build executable with PyInstaller
+        shell: pwsh
+        run: |
+          pyinstaller "NYC_Representatives_Lookup.spec" --clean --noconfirm
 
-- name: Verify build output
-  shell: pwsh
-  run: |
-    $exePath = "dist\NYC_Representatives_Lookup.exe"
-    Write-Host "Checking for EXE at: $exePath"
-    Write-Host "Contents of dist folder:"
-    Get-ChildItem -Recurse dist
+      - name: Verify build output
+        shell: pwsh
+        run: |
+          Write-Host "Contents of dist folder:"
+          Get-ChildItem -Recurse dist
+          $found = Get-ChildItem -Path "dist" -Recurse -Filter "*.exe" | Select-Object -First 1
+          if (-not $found) {
+            Write-Host "EXE not found in dist folder!"
+            exit 1
+          }
+          Write-Host "EXE found: $($found.FullName)"
+          Write-Host "File size: $($found.Length) bytes"
 
-    $found = Get-ChildItem -Path "dist" -Recurse -Filter "*.exe" | Select-Object -First 1
-
-    if (-not $found) {
-      throw "EXE not found in dist folder!"
-    }
-
-    Write-Host "✅ EXE found: $($found.FullName)"
-    Write-Host "✅ Size: $($found.Length) bytes"
-
-
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: NYC_Representatives_Lookup
-        path: dist/NYC_Representatives_Lookup/
-        if-no-files-found: error
-        retention-days: 90
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: NYC_Representatives_Lookup
+          path: dist/NYC_Representatives_Lookup.exe
+          retention-days: 30
