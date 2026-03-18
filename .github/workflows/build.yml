@@ -21,15 +21,16 @@ jobs:
       run: |
         python -m pip install --upgrade pip setuptools wheel
         pip install pyinstaller
-        pip install PyQt5==5.15.10 pandas requests beautifulsoup4 openpyxl lxml
+        pip install PyQt5==5.15.10 pandas requests beautifulsoup4 openpyxl lxml certifi
 
     - name: Verify required files exist
       shell: pwsh
       run: |
-        if (!(Test-Path "main.py")) { throw "MISSING: main.py" }
-        if (!(Test-Path "NYC_Representatives_Lookup.spec")) { throw "MISSING: NYC_Representatives_Lookup.spec" }
-        if (!(Test-Path "icon_256x256.ico")) { throw "MISSING: icon_256x256.ico" }
-        if (!(Test-Path "QEDC-Full-Logo-Primary-Color.jpg")) { throw "MISSING: QEDC-Full-Logo-Primary-Color.jpg" }
+        if (!(Test-Path "main.py"))                              { throw "MISSING: main.py" }
+        if (!(Test-Path "NYC_Representatives_Lookup.spec"))      { throw "MISSING: NYC_Representatives_Lookup.spec" }
+        if (!(Test-Path "icon_256x256.ico"))                     { throw "MISSING: icon_256x256.ico" }
+        if (!(Test-Path "QEDC-Full-Logo-Primary-Color.jpg"))     { throw "MISSING: QEDC-Full-Logo-Primary-Color.jpg" }
+        if (!(Test-Path "Zipcodes-with-Reps-Complete.xlsx"))     { throw "MISSING: Zipcodes-with-Reps-Complete.xlsx" }
         Write-Host "All required files found!"
 
     - name: Build executable with PyInstaller
@@ -37,7 +38,12 @@ jobs:
 
     - name: Verify build output
       shell: pwsh
-      run: Get-ChildItem -Recurse dist
+      run: |
+        Get-ChildItem -Recurse dist
+        if (!(Test-Path "dist\NYC_Representatives_Lookup\NYC_Representatives_Lookup.exe")) {
+          throw "EXE not found in dist folder!"
+        }
+        Write-Host "EXE built successfully!"
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
